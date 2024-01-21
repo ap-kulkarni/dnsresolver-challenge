@@ -1,11 +1,10 @@
 package dnsresolvr
 
 import (
-	"crypto/rand"
-	bytereader "dnsresolvr/internal/pkg"
+	"dnsresolvr/internal/pkg/bytereader"
+	"dnsresolvr/internal/pkg/utils"
 	"encoding/binary"
 	"fmt"
-	"math/big"
 	"net"
 	"os"
 	"strings"
@@ -82,12 +81,12 @@ type DnsHeader struct {
 func (h DnsHeader) GetBytes() []byte {
 	var headerBytes []byte
 
-	headerBytes = append(headerBytes, convertUint16ToBytesArray(h.Id)...)
+	headerBytes = append(headerBytes, utils.ConvertUint16ToBytesArray(h.Id)...)
 	headerBytes = append(headerBytes, h.getHeaderMetadata()...)
-	headerBytes = append(headerBytes, convertUint16ToBytesArray(h.QuestionCount)...)
-	headerBytes = append(headerBytes, convertUint16ToBytesArray(h.AnswerCount)...)
-	headerBytes = append(headerBytes, convertUint16ToBytesArray(h.NameServerRecordsCount)...)
-	headerBytes = append(headerBytes, convertUint16ToBytesArray(h.AdditionalRecordsCount)...)
+	headerBytes = append(headerBytes, utils.ConvertUint16ToBytesArray(h.QuestionCount)...)
+	headerBytes = append(headerBytes, utils.ConvertUint16ToBytesArray(h.AnswerCount)...)
+	headerBytes = append(headerBytes, utils.ConvertUint16ToBytesArray(h.NameServerRecordsCount)...)
+	headerBytes = append(headerBytes, utils.ConvertUint16ToBytesArray(h.AdditionalRecordsCount)...)
 	return headerBytes
 }
 
@@ -110,7 +109,7 @@ func (h DnsHeader) getHeaderMetadata() []byte {
 		headerMeta += 1 << 7
 	}
 	headerMeta += uint16(h.ResponseCode)
-	return convertUint16ToBytesArray(headerMeta)
+	return utils.ConvertUint16ToBytesArray(headerMeta)
 }
 
 type DnsQueryQuestion struct {
@@ -122,8 +121,8 @@ type DnsQueryQuestion struct {
 func (q DnsQueryQuestion) GetBytes() []byte {
 	var questionBytes []byte
 	questionBytes = append(questionBytes, q.Qname...)
-	questionBytes = append(questionBytes, convertUint16ToBytesArray(uint16(q.Qtype))...)
-	questionBytes = append(questionBytes, convertUint16ToBytesArray(uint16(q.Qclass))...)
+	questionBytes = append(questionBytes, utils.ConvertUint16ToBytesArray(uint16(q.Qtype))...)
+	questionBytes = append(questionBytes, utils.ConvertUint16ToBytesArray(uint16(q.Qclass))...)
 	return questionBytes
 }
 
@@ -143,7 +142,7 @@ func (q DnsQuery) GetBytes() []byte {
 }
 
 // Converts domain name string to qname format. e.g "www.google.com" gets converted to
-// "3www6google3com0"
+// "3www6google3com0" in bytes
 func getDomainNameInQnameFormat(domainName string) []byte {
 	nameParts := strings.Split(domainName, ".")
 	var QnameBytes []byte
@@ -158,7 +157,7 @@ func getDomainNameInQnameFormat(domainName string) []byte {
 
 func generateDnsQuery(domainName string) *DnsQuery {
 	queryHeader := &DnsHeader{}
-	queryHeader.Id = getRandomUint16()
+	queryHeader.Id = utils.GetRandomUint16()
 	queryHeader.Opcode = StandardQuery
 	queryHeader.QuestionCount = 1
 	queryHeader.IsRecursionDesired = true
@@ -170,24 +169,6 @@ func generateDnsQuery(domainName string) *DnsQuery {
 	query.Header = *queryHeader
 	query.Questions = []DnsQueryQuestion{*queryQuestion}
 	return query
-}
-
-func getRandomUint16() uint16 {
-	randInt, err := rand.Int(rand.Reader, big.NewInt(65535))
-	if err != nil {
-		os.Exit(2)
-	}
-	return uint16(randInt.Uint64())
-}
-
-func convertUint16ToBytesArray(number uint16) []byte {
-	numBytes := make([]byte, 2)
-	binary.BigEndian.PutUint16(numBytes, number)
-	return numBytes
-}
-
-func getUint16FromBytes(bytesToConvert []byte) uint16 {
-	return binary.BigEndian.Uint16(bytesToConvert)
 }
 
 func queryDns(domainName string) ([]byte, error) {
@@ -276,17 +257,17 @@ func parseAnswersFromResponse(response []byte) {
 		domainPartStartIndex += domainPartLength + 1
 	}
 	fmt.Println("Domain: ", domain.String())
-	fmt.Println("RecordType: ", MessageType(getUint16FromBytes(response[recordTypeIndex:recordTypeIndex+2])))
-	fmt.Println("MessageClass: ", MessageClass(getUint16FromBytes(response[recordTypeIndex+2:recordTypeIndex+4])))
+	fmt.Println("RecordType: ", MessageType(utils.GetUint16FromBytes(response[recordTypeIndex:recordTypeIndex+2])))
+	fmt.Println("MessageClass: ", MessageClass(utils.GetUint16FromBytes(response[recordTypeIndex+2:recordTypeIndex+4])))
 	offset := response[recordTypeIndex+4]
 	if offset&192 == 192 {
 		offset = offset&64 + response[recordTypeIndex+5]
 		fmt.Println("Offset: ", offset)
 	}
-	fmt.Println("Response Type: ", getUint16FromBytes(response[recordTypeIndex+6:recordTypeIndex+8]))
-	fmt.Println("Response Class: ", getUint16FromBytes(response[recordTypeIndex+8:recordTypeIndex+10]))
+	fmt.Println("Response Type: ", utils.GetUint16FromBytes(response[recordTypeIndex+6:recordTypeIndex+8]))
+	fmt.Println("Response Class: ", utils.GetUint16FromBytes(response[recordTypeIndex+8:recordTypeIndex+10]))
 	fmt.Println("TTL: ", binary.BigEndian.Uint32(response[recordTypeIndex+10:recordTypeIndex+14]))
-	fmt.Println("RDATALength: ", getUint16FromBytes(response[recordTypeIndex+14:recordTypeIndex+16]))
+	fmt.Println("RDATALength: ", utils.GetUint16FromBytes(response[recordTypeIndex+14:recordTypeIndex+16]))
 	fmt.Println("ResponseLength after rdata: ", len(response[recordTypeIndex+16:]))
 	data := response[recordTypeIndex+16:]
 	for i := 0; i < len(data); i++ {

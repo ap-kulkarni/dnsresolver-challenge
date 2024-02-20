@@ -52,10 +52,27 @@ func (b *ByteReader) ReadUint16() (uint16, error) {
 	return result, nil
 }
 
-func (b *ByteReader) SeekPosition(offset int64, whence int) error {
-	_, err := b.reader.Seek(offset, whence)
+func (b *ByteReader) ReadUint32() (uint32, error) {
+	byteRead, err := b.ReadBytes(4)
+	if err != nil {
+		return 0, err
+	}
+	result := binary.BigEndian.Uint32(byteRead)
+	return result, nil
+}
+
+func (b *ByteReader) SeekPosition(offset int, whence int) error {
+	_, err := b.reader.Seek(int64(offset), whence)
 	if err != nil {
 		return err
 	}
 	return nil
+}
+
+func (b *ByteReader) GetCurrentPosition() int {
+	return int(b.reader.Size()) - b.reader.Len()
+}
+
+func (b *ByteReader) GetAvailableBytes() int {
+	return b.reader.Len()
 }

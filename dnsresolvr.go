@@ -3,12 +3,29 @@ package dnsresolvr
 import (
 	"dnsresolvr/internal/pkg/bytereader"
 	"dnsresolvr/internal/pkg/utils"
-	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 )
+
+var rootNameServers = []string{
+	"192.41.0.4",
+	"170.247.170.2",
+	"192.33.4.12",
+	"199.7.91.13",
+	"192.203.230.10",
+	"192.5.5.241",
+	"192.112.36.4",
+	"198.97.190.53",
+	"192.36.148.17",
+	"192.58.128.30",
+	"193.0.14.129",
+	"199.7.83.42",
+	"202.12.27.33",
+}
 
 type OpCode uint16
 
@@ -141,6 +158,20 @@ func (q DnsQuery) GetBytes() []byte {
 	return queryBytes
 }
 
+type DnsAnswer struct {
+	Domain      string
+	Address     string
+	RecordType  MessageType
+	RecordClass MessageClass
+	TTL         uint32
+}
+
+type DnsResponse struct {
+	Header   *DnsHeader
+	Question *DnsQueryQuestion
+	Answers  []DnsAnswer
+}
+
 // Converts domain name string to qname format. e.g "www.google.com" gets converted to
 // "3www6google3com0" in bytes
 func getDomainNameInQnameFormat(domainName string) []byte {
@@ -160,7 +191,7 @@ func generateDnsQuery(domainName string) *DnsQuery {
 	queryHeader.Id = utils.GetRandomUint16()
 	queryHeader.Opcode = StandardQuery
 	queryHeader.QuestionCount = 1
-	queryHeader.IsRecursionDesired = true
+	queryHeader.IsRecursionDesired = false
 	queryQuestion := &DnsQueryQuestion{}
 	queryQuestion.Qname = getDomainNameInQnameFormat(domainName)
 	queryQuestion.Qclass = IN
@@ -173,7 +204,7 @@ func generateDnsQuery(domainName string) *DnsQuery {
 
 func queryDns(domainName string) ([]byte, error) {
 	dnsQuery := generateDnsQuery(domainName)
-	addr, err := net.ResolveUDPAddr("udp", "8.8.8.8:53")
+	addr, err := net.ResolveUDPAddr("udp", "198.41.0.4:53")
 	if err != nil {
 		fmt.Println("Error occurred while resolving address for DNS. ", err)
 		os.Exit(2)
@@ -203,7 +234,11 @@ func queryDns(domainName string) ([]byte, error) {
 
 func parseResponse(response []byte) {
 	responseReader := bytereader.NewByteReader(response)
+	dnsResponse := &DnsResponse{}
 	dnsHeader := &DnsHeader{}
+	var dnsAnswers []DnsAnswer
+	dnsResponse.Header = dnsHeader
+	dnsResponse.Answers = dnsAnswers
 	responseId, err := responseReader.ReadUint16()
 	if err != nil {
 		fmt.Println("Error parsing response ID: ", err)
@@ -213,15 +248,20 @@ func parseResponse(response []byte) {
 	_ = populateDnsHeaderWithMetadata(headerMeta, dnsHeader)
 	dnsHeader.QuestionCount, _ = responseReader.ReadUint16()
 	dnsHeader.AnswerCount, _ = responseReader.ReadUint16()
+	fmt.Println("Answer count: ", dnsHeader.AnswerCount)
 	dnsHeader.NameServerRecordsCount, _ = responseReader.ReadUint16()
+	fmt.Println("Name Server Records: ", dnsHeader.NameServerRecordsCount)
 	dnsHeader.AdditionalRecordsCount, _ = responseReader.ReadUint16()
-	fmt.Println("Response Id: ", dnsHeader.Id)
-	fmt.Println("Is Response", dnsHeader.IsResponse)
-	fmt.Println("Is authoritative", dnsHeader.IsAuthoritativeAnswer)
-	fmt.Println("Is truncated: ", dnsHeader.IsTruncatedMessage)
-	fmt.Println("Question Count: ", dnsHeader.QuestionCount)
-	fmt.Println("Answer Count: ", dnsHeader.AnswerCount)
-	//parseAnswersFromResponse(response[12:])
+	_ = readDomainFromResponse(responseReader)
+	_, _ = responseReader.ReadUint16()
+	_, _ = responseReader.ReadUint16()
+	for i := 0; uint16(i) < dnsHeader.AnswerCount; i++ {
+		ans := parseAnswersFromResponse(responseReader)
+		dnsResponse.Answers = append(dnsResponse.Answers, *ans)
+	}
+	for j := 0; uint16(j) < dnsHeader.NameServerRecordsCount; j++ {
+		parseAnswersFromResponse(responseReader)
+	}
 }
 
 func readDomainFromResponse(responseReader *bytereader.ByteReader) string {
@@ -241,39 +281,45 @@ func readDomainFromResponse(responseReader *bytereader.ByteReader) string {
 	return domain.String()
 }
 
-func parseAnswersFromResponse(response []byte) {
-	domain := strings.Builder{}
-	var domainPartStartIndex uint = 0
-	var domainPartLength uint
-	var recordTypeIndex uint
-	for {
-		domainPartLength = uint(response[domainPartStartIndex])
-		if domainPartLength == 0 {
-			recordTypeIndex = domainPartStartIndex + 1
-			break
+func readIpAddressFromResponse(addressInBytes []byte) string {
+	address := strings.Builder{}
+	for i := 0; i < 4; i++ {
+		address.WriteString(strconv.Itoa(int(addressInBytes[i])))
+		if i != 3 {
+			address.WriteRune('.')
 		}
-		domain.Write(response[domainPartStartIndex+1 : domainPartStartIndex+domainPartLength+1])
-		domain.WriteRune('.')
-		domainPartStartIndex += domainPartLength + 1
 	}
-	fmt.Println("Domain: ", domain.String())
-	fmt.Println("RecordType: ", MessageType(utils.GetUint16FromBytes(response[recordTypeIndex:recordTypeIndex+2])))
-	fmt.Println("MessageClass: ", MessageClass(utils.GetUint16FromBytes(response[recordTypeIndex+2:recordTypeIndex+4])))
-	offset := response[recordTypeIndex+4]
-	if offset&192 == 192 {
-		offset = offset&64 + response[recordTypeIndex+5]
-		fmt.Println("Offset: ", offset)
+	return address.String()
+}
+
+func parseAnswersFromResponse(responseReader *bytereader.ByteReader) *DnsAnswer {
+	o, _ := responseReader.ReadSingleByte()
+	isDomainNameCompressedInAnswer := int(o)&192 == 192
+	var originalReaderPosition int
+	if isDomainNameCompressedInAnswer {
+		o2, _ := responseReader.ReadSingleByte()
+		offset := int(o)&63 + int(o2)
+		originalReaderPosition = responseReader.GetCurrentPosition()
+		_ = responseReader.SeekPosition(offset, io.SeekStart)
 	}
-	fmt.Println("Response Type: ", utils.GetUint16FromBytes(response[recordTypeIndex+6:recordTypeIndex+8]))
-	fmt.Println("Response Class: ", utils.GetUint16FromBytes(response[recordTypeIndex+8:recordTypeIndex+10]))
-	fmt.Println("TTL: ", binary.BigEndian.Uint32(response[recordTypeIndex+10:recordTypeIndex+14]))
-	fmt.Println("RDATALength: ", utils.GetUint16FromBytes(response[recordTypeIndex+14:recordTypeIndex+16]))
-	fmt.Println("ResponseLength after rdata: ", len(response[recordTypeIndex+16:]))
-	data := response[recordTypeIndex+16:]
-	for i := 0; i < len(data); i++ {
-		fmt.Print(uint(data[i]), " ")
+	domainFromResponse := readDomainFromResponse(responseReader)
+	if isDomainNameCompressedInAnswer {
+		_ = responseReader.SeekPosition(originalReaderPosition, io.SeekStart)
 	}
-	fmt.Println()
+	rt, _ := responseReader.ReadUint16()
+	rc, _ := responseReader.ReadUint16()
+	ttl, _ := responseReader.ReadUint32()
+	dataLength, _ := responseReader.ReadUint16()
+	rdata, _ := responseReader.ReadBytes(int(dataLength))
+	ipAddress := readIpAddressFromResponse(rdata)
+	ans := &DnsAnswer{
+		Domain:      domainFromResponse,
+		RecordClass: MessageClass(rc),
+		RecordType:  MessageType(rt),
+		TTL:         ttl,
+		Address:     ipAddress,
+	}
+	return ans
 }
 
 func populateDnsHeaderWithMetadata(headerMeta uint16, dnsHeader *DnsHeader) error {

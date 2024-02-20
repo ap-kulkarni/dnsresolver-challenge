@@ -7,6 +7,7 @@ This is a solution to a coding challenge to write a basic DNS resolver. This is 
 ## Status
 - [x] Generate DNS query
 - [x] Query DNS with Authoritative Server
+- [x] Support querying Root Domain Server [Partial support - need to add code to recursively query nameservers]
 - [ ] Query `CNAME` records
 
 
